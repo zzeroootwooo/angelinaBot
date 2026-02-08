@@ -18,7 +18,7 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 
 
-OPENWEATHER_API_KEY = "bd5e378503939ddaee76f12ad7a97608"
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
 COMPLIMENTS = [
     "Ты сегодня особенно сияешь ✨",
