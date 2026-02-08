@@ -16,8 +16,7 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-
-
+WEATHER_CACHE_TTL_SEC = 10 * 60  # 10 минут
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
 COMPLIMENTS = [
@@ -79,9 +78,6 @@ def main_keyboard() -> InlineKeyboardMarkup:
 
 
 async def get_weather_varna() -> dict:
-    """
-    Возвращает dict с temp, feels_like, desc, wind, rain (bool)
-    """
     if not OPENWEATHER_API_KEY:
         return {"error": "NO_API_KEY"}
 
@@ -95,14 +91,22 @@ async def get_weather_varna() -> dict:
 
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(url, params=params)
-        r.raise_for_status()
-        data = r.json()
+
+    # ВАЖНО: не падаем, а возвращаем ошибку
+    if r.status_code == 429:
+        return {"error": "RATE_LIMIT"}
+    if r.status_code == 401:
+        return {"error": "BAD_KEY"}
+    if r.status_code >= 400:
+        return {"error": f"HTTP_{r.status_code}"}
+
+    data = r.json()
 
     temp = float(data["main"]["temp"])
     feels_like = float(data["main"]["feels_like"])
     desc = data["weather"][0]["description"]
     wind = float(data.get("wind", {}).get("speed", 0.0))
-    rain = bool(data.get("rain"))  # если есть rain в ответе — вероятен дождь
+    rain = bool(data.get("rain"))
 
     return {
         "temp": temp,
@@ -139,16 +143,33 @@ def outfit_advice(temp: float, wind: float, rain: bool) -> str:
     return " ".join(tips)
 
 
-async def build_weather_message() -> str:
-    w = await get_weather_varna()
+async def build_weather_message(context: ContextTypes.DEFAULT_TYPE) -> str:
+    # 1) кэш
+    cache = context.bot_data.get("weather_cache")
+    now_ts = dt.datetime.now().timestamp()
+    if cache and (now_ts - cache["ts"] < WEATHER_CACHE_TTL_SEC):
+        w = cache["data"]
+    else:
+        w = await get_weather_varna()
+        context.bot_data["weather_cache"] = {"ts": now_ts, "data": w}
+
+    # 2) обработка ошибок
     if w.get("error") == "NO_API_KEY":
         return (
-            "🌤 Хочу подсказать по погоде в Варне, но нет ключа OpenWeather.\n"
-            "Сделай так:\n"
-            "1) возьми API key на OpenWeather\n"
-            "2) в терминале: export OPENWEATHER_API_KEY=\"...\"\n"
-            "3) перезапусти бота"
+            "🌤 Нет OPENWEATHER_API_KEY.\n"
+            "На сервере задай:\n"
+            "Environment=OPENWEATHER_API_KEY=...\n"
+            "и перезапусти сервис."
         )
+
+    if w.get("error") == "RATE_LIMIT":
+        return "🌤 Сейчас лимит запросов к погоде (429). Попробуй через пару минут 🙂"
+
+    if w.get("error") == "BAD_KEY":
+        return "🌤 Ключ погоды не подходит (401). Проверь OPENWEATHER_API_KEY."
+
+    if w.get("error"):
+        return f"🌤 Не смог получить погоду: {w['error']}"
 
     temp = w["temp"]
     feels = w["feels_like"]
@@ -168,7 +189,7 @@ async def build_weather_message() -> str:
 
 
 async def send_weather_now(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = await build_weather_message()
+    msg = await build_weather_message(context)
     await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=main_keyboard())
 
 
@@ -269,7 +290,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if query.data == BTN_COMPLIMENT:
         context.user_data[WAITING_QUESTION_KEY] = False
-        await query.message.reply_text(pick_compliment(), reply_markup=main_keyboard())
+        await query.message.reply_text(await build_weather_message(context), reply_markup=main_keyboard())
         return
 
     if query.data == BTN_UNIVERSE:
