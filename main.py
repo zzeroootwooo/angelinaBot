@@ -303,7 +303,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if query.data == BTN_WEATHER:
         context.user_data[WAITING_QUESTION_KEY] = False
-        await query.message.reply_text(await build_weather_message(), reply_markup=main_keyboard())
+        await query.message.reply_text(await build_weather_message(context), reply_markup=main_keyboard())
         return
 
 
